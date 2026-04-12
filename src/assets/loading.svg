@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg id="Camada_1" xmlns="http://www.w3.org/2000/svg" version="1.1" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 500 500">
+  <defs>
+    <style>
+      .st0 {
+        fill: none;
+        stroke: url(#Gradiente_sem_nome_2);
+        stroke-miterlimit: 10;
+        stroke-width: 22px;
+      }
+    </style>
+    <linearGradient id="Gradiente_sem_nome_2" data-name="Gradiente sem nome 2" x1="99.77" y1="247.15" x2="406.75" y2="247.15" gradientTransform="translate(0 500) scale(1 -1)" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ffef26"/>
+      <stop offset="0" stop-color="#feed26"/>
+      <stop offset=".02" stop-color="#f3cd32"/>
+      <stop offset=".04" stop-color="#eab33c"/>
+      <stop offset=".06" stop-color="#e29d44"/>
+      <stop offset=".08" stop-color="#dd8c4b"/>
+      <stop offset=".12" stop-color="#d8804f"/>
+      <stop offset=".16" stop-color="#d67952"/>
+      <stop offset=".28" stop-color="#d67853"/>
+      <stop offset=".83" stop-color="#d47253"/>
+      <stop offset="1" stop-color="#e3312d"/>
+    </linearGradient>
+  </defs>
+  <ellipse class="st0" cx="253.26" cy="252.85" rx="142.49" ry="144.32"/>
+</svg>
