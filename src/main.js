@@ -132,7 +132,14 @@ activateProvider?.addEventListener('click', async () => {
   // Atualiza o label do seletor na bottom bar
   document.querySelector('.model-selector span').textContent = `${name.toUpperCase()} · ${model}`;
 
-  // Persistência local
+  // Persistência no backend (.env) para o CLI e chat_stream
+  try {
+    await invoke('save_api_config', { baseUrl, apiKey, model });
+  } catch (err) {
+    showNotification(`Falha ao salvar configuração no backend: ${err}`, 'error');
+  }
+
+  // Persistência local (browser)
   localStorage.setItem('openclaude_provider', JSON.stringify({ name, model }));
   localStorage.setItem('openclaude_provider_full', JSON.stringify({ name, baseUrl, model, apiKey }));
 

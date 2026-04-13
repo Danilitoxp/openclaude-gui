@@ -459,6 +459,25 @@ pub async fn delete_session(app: tauri::AppHandle, id: String) -> Result<(), Str
     Ok(())
 }
 
+#[tauri::command]
+pub async fn save_api_config(
+    config: tauri::State<'_, Arc<RwLock<AppConfig>>>,
+    base_url: String,
+    api_key: String,
+    model: String,
+) -> Result<(), String> {
+    let cfg = config.read().await.clone();
+    let env_path = std::path::Path::new(&cfg.working_dir).join(".env");
+    
+    let content = format!(
+        "OPENAI_BASE_URL={}\nOPENAI_API_KEY={}\nOPENAI_MODEL={}\n",
+        base_url, api_key, model
+    );
+    
+    std::fs::write(env_path, content).map_err(|e| format!("Falha ao salvar .env: {}", e))?;
+    Ok(())
+}
+
 fn sanitize_filename(name: &str) -> String {
     name.chars()
         .filter(|c| c.is_alphanumeric() || *c == '_' || *c == '-')

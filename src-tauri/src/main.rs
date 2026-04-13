@@ -57,6 +57,7 @@ async fn main() {
             commands::delete_session,
             commands::check_requirements,
             commands::install_openclaude,
+            commands::save_api_config,
         ]);
 
     /* #[cfg(not(target_os = "android"))]

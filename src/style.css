@@ -402,9 +402,12 @@ body {
   width: 100%;
   display: flex;
   justify-content: center;
+  z-index: 1000;
+  pointer-events: none;
 }
 
 .model-selector {
+  pointer-events: auto;
   display: flex;
   align-items: center;
   gap: 8px;

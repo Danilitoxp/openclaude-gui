@@ -27,9 +27,18 @@ Nascido da necessidade de ter uma interface local poderosa e fácil de usar, ele
 
 - 🖥️ **Interface Nativa**: Construído com **Tauri 2**, garantindo baixo consumo de recursos e performance máxima.
 - 🎨 **Design Premium**: Estética *glassmorphism* com bordas finas e sombras suaves para um visual state-of-the-art.
-- 💬 **Gestão de Sessões**: Histórico de chat persistente e organizado.
-- 🤖 **Seletor de Modelos**: Troque entre diferentes versões e provedores do OpenClaude com facilidade.
+<br><br>
+<img src="assets/design.png" alt="OpenClaude Design" width="90%">
+<br><br>
+
+- 💬 **Gestão de Sessões**: Histórico de chat persistente e organizado para que você nunca perca o fio da meada.
+<br><br>
+<img src="assets/Historico.png" alt="Histórico de Sessões" width="90%">
+<br><br>
+
+- 🤖 **Seletor de Modelos**: Troque entre diferentes versões e provedores do OpenClaude com facilidade através de uma interface intuitiva.
 - 🚀 **Performance**: Frontend ultra-rápido utilizando **Vite** e Vanilla JS/CSS.
+- 📂 **Multi-provedores**: Suporte a Anthropic, OpenAI, OpenRouter e outros via configuração flexível.
 
 ## 🛠️ Tecnologias Utilizadas
 
@@ -39,8 +48,14 @@ Nascido da necessidade de ter uma interface local poderosa e fácil de usar, ele
 
 ## 🚀 Como Começar
 
-### Pré-requisitos
+### Configuração Inicial
+Após instalar, o primeiro passo é configurar seu provedor de IA (como OpenRouter ou Anthropic) para que o OpenClaude possa se conectar aos modelos:
 
+<br>
+<img src="assets/configuracoes.png" alt="Configurar Provedor" width="90%">
+<br><br>
+
+### Pré-requisitos
 Antes de começar, você precisará ter instalado:
 - [Node.js](https://nodejs.org/)
 - [Rust](https://www.rust-lang.org/tools/install) (necessário para o Tauri)

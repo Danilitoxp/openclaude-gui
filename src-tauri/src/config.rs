@@ -25,7 +25,7 @@ impl Default for AppConfig {
         Self {
             openclaude_path: "node".to_string(),
             args: vec!["dist/cli.mjs".to_string()],
-            working_dir: "C:\\Users\\danil\\OneDrive\\Desktop\\openclaude-main".to_string(),
+            working_dir: ".".to_string(),
             port: 3000,
             startup_timeout_ms: 30000,
             theme: "dark".to_string(),
