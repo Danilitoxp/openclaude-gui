@@ -17,6 +17,8 @@
     "core:event:allow-listen",
     "core:event:allow-unlisten",
     "dialog:allow-open",
+    "dialog:allow-ask",
+    "dialog:allow-message",
     "fs:allow-read-text-file",
     "shell:allow-open"
   ]

@@ -1453,7 +1453,7 @@ body {
   font-style: italic;
   font-size: 0.9rem;
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 12px;
   padding-left: 0;
 }
@@ -1494,25 +1494,95 @@ body {
   flex-shrink: 0;
 }
 
-.thinking-subtext {
-  max-width: 480px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  font-style: normal;
-  margin-top: 6px;
-  margin-bottom: 2px;
-  opacity: 0.7;
-  transition: all 0.3s ease;
+.thinking-activity-log {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: flex-start;
+  text-align: left;
+  max-height: 300px;
+  width: 100%;
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
 
-  font-family: "Inter", monospace;
-  font-size: 0.75rem;
+.thinking-activity-line {
+  font-size: 13px;
+  color: #666;
+  padding-left: 0;
+  animation: slideUpActivity 0.2s ease forwards;
+}
+
+.tool-use-row.live {
+  animation: slideInActivity 0.25s ease forwards;
+  margin-left: 0 !important;
+  background: transparent !important;
+  border: none !important;
+  padding: 0 !important;
+  gap: 0 !important;
+  display: flex;
+  align-items: center;
+}
+
+.tool-use-row.live .tool-use-header {
+  gap: 6px;
+}
+
+.tool-use-row.live .tool-name {
+  font-size: 12px;
+  color: #555;
+  min-width: auto;
+}
+
+.tool-use-row.live .tool-pill {
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+  padding: 0 !important;
+  margin: 0 !important;
   color: #888;
-  background: none;
-  border: none;
-  border-radius: 0;
-  padding: 0;
-  letter-spacing: 0.3px;
+  font-size: 13px;
+  max-width: 500px;
+}
+
+.tool-use-row.live,
+.thinking-activity-line {
+  animation: slideUpActivity 0.3s cubic-bezier(0.2, 0.8, 0.2, 1) forwards;
+  position: relative;
+}
+
+@keyframes slideUpActivity {
+  from { 
+    opacity: 0; 
+    transform: translateY(12px); 
+    filter: blur(2px);
+  }
+  to { 
+    opacity: 1; 
+    transform: translateY(0); 
+    filter: blur(0);
+  }
+}
+
+/* Efeito de opacidade/sombra abaixo das letras */
+.thinking-activity-area {
+  position: relative;
+  mask-image: linear-gradient(to bottom, black 80%, transparent 100%);
+  -webkit-mask-image: linear-gradient(to bottom, black 80%, transparent 100%);
+  padding-bottom: 2px;
+}
+
+.tool-use-row.live {
+  text-shadow: 0 1px 2px rgba(0,0,0,0.3);
+}
+
+.thinking-activity-log::-webkit-scrollbar {
+  width: 4px;
+}
+.thinking-activity-log::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 4px;
 }
 
 .thinking-live-stats {
@@ -1630,6 +1700,33 @@ body {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  flex: 1;
+}
+
+.inline-tool-spinner {
+  width: 10px;
+  height: 10px;
+  border: 1.5px solid rgba(216, 105, 64, 0.15);
+  border-top-color: #d86940;
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+  opacity: 0.8;
+  transition: opacity 0.3s ease, transform 0.3s ease;
+}
+
+.inline-tool-card.completed .inline-tool-spinner {
+  opacity: 0;
+  transform: scale(0.5);
+  pointer-events: none;
+}
+
+.inline-tool-card.completed {
+  border-color: rgba(255, 255, 255, 0.05);
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.inline-tool-card.completed .inline-tool-title {
+  color: #555;
 }
 
 .inline-tool-card pre {
@@ -2295,6 +2392,15 @@ body {
   font-size: 12px;
   border: 1px dashed rgba(255, 255, 255, 0.05);
   border-radius: 8px;
+}
+
+.tool-use-row.live .tool-pill {
+  background: transparent !important;
+  border: none !important;
+  color: #888;
+  padding: 0;
+  font-size: 13px;
+  max-width: 500px;
 }
 
 .btn-text-action {

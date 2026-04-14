@@ -1,7 +1,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
-import { open } from '@tauri-apps/plugin-dialog';
+import { open, confirm as tauriConfirm } from '@tauri-apps/plugin-dialog';
 import { readTextFile, writeTextFile } from '@tauri-apps/plugin-fs';
 import './style.css';
 
@@ -25,6 +25,7 @@ let currentAttachments = [];
 let isGenerating = false;
 let currentToolUses = []; // acumula ferramentas usadas durante geração
 const toolCardMap = new Map(); // tool_use_id → card DOM element (para injetar output)
+let lastToolCard = null; // referência ao último card exibido (para remover no próximo)
 
 // ── Modo de execução ────────────────────────────────────────
 // 'auto'  → --dangerously-skip-permissions (executa tudo)
@@ -36,6 +37,45 @@ const MODES = {
   plan: { icon: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>', label: 'Planejar', desc: 'Só descreve, não executa' },
 };
 let currentMode = localStorage.getItem('openclaude_mode') || 'auto';
+
+// Price map for cost calculation (prices per 1M tokens)
+const MODEL_PRICES = {
+  'gpt-4o': { in: 5, out: 15 },
+  'gpt-4o-mini': { in: 0.15, out: 0.60 },
+  'claude-3-5-sonnet-20240620': { in: 3, out: 15 },
+  'claude-3-5-sonnet-20241022': { in: 3, out: 15 },
+  'claude-3-5-sonnet-latest': { in: 3, out: 15 },
+  'claude-3-5-haiku-20241022': { in: 0.8, out: 4 },
+  'claude-3-haiku-20240307': { in: 0.25, out: 1.25 },
+  'o1-preview': { in: 15, out: 60 },
+  'o1-mini': { in: 3, out: 12 },
+  'gemini-1.5-pro': { in: 3.5, out: 10.5 },
+  'gemini-1.5-flash': { in: 0.075, out: 0.3 },
+  'qwen/qwen3.5-flash-02-23': { in: 0.10, out: 0.10 }, // Estimate for flash models
+  'deepseek-chat': { in: 0.14, out: 0.28 },
+};
+
+function getLivingModel() {
+  const saved = localStorage.getItem('openclaude_provider');
+  if (saved) {
+    try {
+      const p = JSON.parse(saved);
+      return p.model || '';
+    } catch (e) { }
+  }
+  return '';
+}
+
+function calculateCost(model, inTok, outTok) {
+  let p = MODEL_PRICES[model];
+  if (!p) {
+    // Try fuzzy match
+    const key = Object.keys(MODEL_PRICES).find(k => model.includes(k));
+    p = key ? MODEL_PRICES[key] : { in: 1, out: 1 }; // Fallback minimal
+  }
+  const cost = (inTok / 1000000 * p.in) + (outTok / 1000000 * p.out);
+  return cost;
+}
 
 // ── Project selector ─────────────────────────────────────────
 let currentProjectPath = null; // pasta ativa para a sessão atual
@@ -499,7 +539,8 @@ const loadSessionsList = async () => {
         delBtn.title = 'Excluir conversa';
         delBtn.onclick = async (e) => {
           e.stopPropagation(); // Não abrir a conversa ao deletar
-          if (confirm(`Excluir a conversa "${readable}"?`)) {
+          const confirmed = await tauriConfirm(`Excluir a conversa "${readable}"?`, { title: 'Excluir conversa', kind: 'warning' });
+          if (confirmed) {
             try {
               await invoke('delete_session', { id });
               if (currentSessionId === id) {
@@ -603,9 +644,10 @@ const createLogLine = (text, type) => {
           <div class="thinking-text">Pensando</div>
           <span class="live-timer">0s</span>
         </div>
-        <div class="thinking-subtext" style="display: none;"></div>
+        <div class="thinking-activity-area"></div>
         <div class="thinking-live-stats">
           <span class="live-tokens" style="display:none;"></span>
+          <span class="live-cost" style="display:none; color: #666; font-family: monospace; font-size: 0.85em; margin-left: 8px;"></span>
         </div>
       `;
     } else {
@@ -681,6 +723,7 @@ function setGenerationState(generating) {
 
 listen('log-update', async (event) => {
   const data = event.payload;
+  console.log(`[LOG-UPDATE] source=${data.source} | msg(${(data.message || '').length}c)=`, (data.message || '').slice(0, 300));
 
   // Helpers: ativa o chat mode e sincroniza estado do thinking
   const ensureChatMode = () => {
@@ -690,39 +733,34 @@ listen('log-update', async (event) => {
     if (placeholder) placeholder.remove();
   };
 
-  const updateThinkingState = (title, subtext) => {
-    if (!currentThinkingBubble) return;
+  const updateThinkingState = (title, subtext, labelData = null) => {
+    if (!currentThinkingBubble) {
+      currentThinkingBubble = createLogLine('Processando...', 'thinking');
+    }
+
     if (title) {
       const titleEl = currentThinkingBubble.querySelector('.thinking-text');
       if (titleEl) titleEl.textContent = title;
     }
-    const sub = currentThinkingBubble.querySelector('.thinking-subtext');
-    if (sub && subtext !== undefined) {
-      if (subtext) {
-        sub.style.display = 'inline-block';
-        
-        // Remove códigos ANSI e limpa prefixos de terminal
-        let cleanText = subtext.replace(/[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]/g, '');
-        
-        if (cleanText.includes('[context]')) {
-          // Remove prefixos como └, L, -, |, etc.
-          cleanText = cleanText.replace(/^[^\w\[]+/, '').replace('[context]', '').trim();
-          sub.innerHTML = `
-            <div style="display: flex; align-items: center; gap: 6px; color: #aaa; font-size: 11px; margin-top: 4px;">
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#d86940" stroke-width="2.5" style="flex-shrink: 0;">
-                <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path>
-                <line x1="12" y1="9" x2="12" y2="13"></line>
-                <line x1="12" y1="17" x2="12.01" y2="17"></line>
-              </svg>
-              <span>${cleanText}</span>
-            </div>
-          `;
-        } else {
-          sub.textContent = subtext;
-        }
-      } else {
-        sub.style.display = 'none';
-      }
+
+    const activityArea = currentThinkingBubble.querySelector('.thinking-activity-area');
+    if (!activityArea) return;
+
+    if (labelData) {
+      // Substitui o status anterior por um label rico
+      activityArea.innerHTML = `
+        <div class="tool-use-row live">
+          <div class="tool-use-header">
+            <span class="tool-name">${labelData.name}</span>
+            <span class="tool-pill" title="${escapeHtml(String(labelData.val))}">${escapeHtml(String(labelData.val))}</span>
+          </div>
+        </div>
+      `;
+    } else if (subtext !== undefined && subtext) {
+      // Substitui o status por texto simples
+      activityArea.innerHTML = `<span class="thinking-activity-line">${subtext}</span>`;
+    } else if (subtext === '') {
+      activityArea.innerHTML = '';
     }
   };
 
@@ -764,26 +802,28 @@ listen('log-update', async (event) => {
     return;
   }
 
-  if (!data.message) return;
+  // Filtre apenas se não houver payload relevante
+  if (!data.message && data.source !== 'system' && !data.id) return;
 
   // ── Labels amigáveis para tool use em PT-BR ──
   const toolLabels = {
-    'Read': (inp) => ({ name: 'Read', val: inp.file_path || inp.path || '', sub: 'Ler arquivo' }),
-    'Write': (inp) => ({ name: 'Write', val: inp.file_path || '', sub: 'Criar arquivo' }),
-    'Edit': (inp) => ({ name: 'Edit', val: inp.file_path || '', sub: 'Editar arquivo' }),
-    'Bash': (inp) => { const c = inp.command || ''; return { name: 'Bash', val: c.length > 100 ? c.slice(0, 100) + '…' : c, sub: 'Executar comando' }; },
-    'Glob': (inp) => ({ name: 'Glob', val: inp.pattern || '', sub: 'Buscar arquivos' }),
-    'Grep': (inp) => ({ name: 'Grep', val: inp.pattern || '', sub: 'Pesquisar texto' }),
-    'Agent': (inp) => ({ name: 'Agent', val: (inp.description || inp.prompt || '').slice(0, 50) + '…', sub: 'Subagente' }),
-    'TodoWrite': (_) => ({ name: 'Todo', val: 'atualizando tarefas', sub: 'Lista' }),
-    'WebFetch': (inp) => ({ name: 'Web', val: (inp.url || '').slice(0, 60), sub: 'Buscar URL' }),
-    'WebSearch': (inp) => ({ name: 'Search', val: inp.query || '', sub: 'Pesquisar na web' }),
+    'Read': (inp) => ({ name: 'Lendo', val: inp.file_path || inp.path || '', sub: 'Arquivo' }),
+    'Write': (inp) => ({ name: 'Criando', val: inp.file_path || '', sub: 'Arquivo' }),
+    'Edit': (inp) => ({ name: 'Editando', val: inp.file_path || '', sub: 'Arquivo' }),
+    'Bash': (inp) => { const c = inp.command || ''; return { name: 'Executando', val: c.length > 100 ? c.slice(0, 100) + '…' : c, sub: 'Comando terminal' }; },
+    'Glob': (inp) => ({ name: 'Buscando', val: inp.pattern || '', sub: 'Arquivos no workspace' }),
+    'Grep': (inp) => ({ name: 'Pesquisando', val: inp.pattern || '', sub: 'Conteúdo nos arquivos' }),
+    'Agent': (inp) => ({ name: 'Subagente', val: (inp.description || inp.prompt || '').slice(0, 50) + '…', sub: 'Delegando tarefa' }),
+    'TodoWrite': (_) => ({ name: 'Tarefas', val: 'atualizando lista', sub: 'Pendências' }),
+    'WebFetch': (inp) => ({ name: 'Web', val: (inp.url || '').slice(0, 60), sub: 'Buscando conteúdo' }),
+    'WebSearch': (inp) => ({ name: 'Pesquisa', val: inp.query || '', sub: 'Buscando na web' }),
     'NotebookEdit': (_) => ({ name: 'Notebook', val: 'editando', sub: 'Jupyter' }),
-    'Skill': (inp) => ({ name: 'Skill', val: inp.skill || '', sub: 'Executar skill' }),
+    'Skill': (inp) => ({ name: 'Skill', val: inp.skill || '', sub: 'Executando skill' }),
   };
 
   // ── Processa stdout (stream-json): cada chunk pode ter múltiplas linhas JSON ──
   if (data.source === 'stdout') {
+    window._lastActivityTime = Date.now(); // Registra atividade para o indicador de inatividade
     console.log(`[STDOUT] Recebido ${data.message.length} caracteres`);
     // Buffer de linhas incompletas entre chunks
     window._stdoutLineBuf = (window._stdoutLineBuf || '') + data.message;
@@ -798,13 +838,16 @@ listen('log-update', async (event) => {
 
       // Tenta parsear como JSON (stream-json)
       let evt;
-      try { evt = JSON.parse(line); } catch (_) {
+      try { evt = JSON.parse(line); } catch (parseErr) {
+        console.warn(`[STDOUT-PARSE] Linha NÃO é JSON (modo texto puro): "${line.slice(0, 150)}"`);
         // Não é JSON → modo texto puro (fallback para --print sem stream-json)
         if (lastAssistantBubble) {
           currentAssistantText += (currentAssistantText ? '\n' : '') + line;
           updateBubbleContent(lastAssistantBubble, currentAssistantText);
+          // Yield: efeito de streaming linha a linha
+          await new Promise(r => requestAnimationFrame(r));
         } else {
-          // Se for uma mensagem de sistema/contexto, não finaliza o modo thinking
+          // Mensagens internas do CLI ([context], deprecation, etc.) — mostra como info de progresso
           if (line.includes('[context]')) {
              updateThinkingState(null, line);
              continue;
@@ -817,6 +860,8 @@ listen('log-update', async (event) => {
           }
           currentAssistantText = line;
           lastAssistantBubble = createLogLine(currentAssistantText, 'stdout');
+          // Yield: mostra a primeira linha antes de continuar
+          await new Promise(r => requestAnimationFrame(r));
         }
         continue;
       }
@@ -824,6 +869,7 @@ listen('log-update', async (event) => {
       // ── Evento JSON parseado com sucesso ──
       const evtType = evt.type;
       const evtSub = evt.subtype;
+      console.log(`[JSON-EVENT] type=${evtType} subtype=${evtSub || '-'} keys=[${Object.keys(evt).join(',')}]`);
 
 
 
@@ -835,6 +881,23 @@ listen('log-update', async (event) => {
           updateModelLabel(activeProvider, activeModel);
         }
         updateThinkingState('Conectando', `Aguardando ${activeModel || 'resposta'}...`);
+        continue;
+      }
+
+      // system/thinking — feedback visual do agente agindo
+      if (evtType === 'system' && evtSub === 'thinking') {
+        const title = evt.title || 'Processando';
+        const msg = evt.message || evt.subtext || '';
+        updateThinkingState(title, msg);
+        continue;
+      }
+
+      // system/task_progress ou task_started — feedback detalhado do CLI (subtítulo)
+      if (evtType === 'system' && (evtSub === 'task_progress' || evtSub === 'task_started')) {
+        const desc = evt.description || '';
+        if (desc) {
+          updateThinkingState('Trabalhando', desc);
+        }
         continue;
       }
 
@@ -851,6 +914,7 @@ listen('log-update', async (event) => {
       // assistant — mensagem do assistente com content blocks
       // Formato SDK: {type:"assistant", message:{content:[...], usage:{input_tokens, output_tokens}}}
       if (evtType === 'assistant' && evt.message?.content) {
+        console.log(`[ASSISTANT-BLOCKS] total=${(evt.message.content || []).length} types=[${(evt.message.content || []).map(b => b.type).join(',')}]`);
         // Acumula tokens em tempo real
         const u = evt.message.usage;
         if (u && window._liveTokens) {
@@ -867,23 +931,15 @@ listen('log-update', async (event) => {
             const labelFn = toolLabels[toolName];
             const labelObj = labelFn ? labelFn(toolInput) : { name: toolName, val: '...', sub: '' };
 
-            let title = labelObj.name || toolName;
-            let subtext = labelObj.val || '';
-
-            updateThinkingState(title, subtext);
             currentToolUses.push({ name: toolName, input: toolInput, label: labelObj, id: block.id });
 
+            // Em vez de ocupar a tela com cards gigantes durante o thinking,
+            // mostramos a atividade em tempo real no bubble de pensamento.
             ensureChatMode();
-            const inlineBlock = createInlineToolBlock(toolName, toolInput);
-            if (inlineBlock) {
-              if (block.id) toolCardMap.set(block.id, inlineBlock);
-              if (currentThinkingBubble && currentThinkingBubble.parentNode) {
-                responseArea.insertBefore(inlineBlock, currentThinkingBubble);
-              } else {
-                responseArea.appendChild(inlineBlock);
-              }
-              responseArea.scrollTo({ top: responseArea.scrollHeight, behavior: 'smooth' });
-            }
+            updateThinkingState('Trabalhando', null, labelObj);
+            
+            // Pequeno delay visual para fluidez
+            await new Promise(r => requestAnimationFrame(r));
           }
 
           if (block.type === 'text' && block.text) {
@@ -892,12 +948,27 @@ listen('log-update', async (event) => {
               currentThinkingBubble.remove();
               currentThinkingBubble = null;
             }
+            // Remove o último card de ferramenta ao começar a falar
+            if (lastToolCard) {
+              lastToolCard.remove();
+              lastToolCard = null;
+            }
 
-            currentAssistantText += block.text;
-            if (lastAssistantBubble) {
-              updateBubbleContent(lastAssistantBubble, currentAssistantText);
-            } else {
-              lastAssistantBubble = createLogLine(currentAssistantText, 'stdout');
+            // Animação word-by-word: simula streaming de tokens em tempo real
+            // Divide em tokens (palavras + espaços/pontuação) para efeito natural
+            const tokens = block.text.match(/\S+\s*/g) || [block.text];
+            const DELAY_MS = 18; // ms entre batches
+            // Batch adaptativo: mantém animação em ~1.5s independente do tamanho
+            const BATCH = Math.max(1, Math.ceil(tokens.length / 80));
+            for (let i = 0; i < tokens.length; i += BATCH) {
+              currentAssistantText += tokens.slice(i, i + BATCH).join('');
+              if (lastAssistantBubble) {
+                updateBubbleContent(lastAssistantBubble, currentAssistantText);
+              } else {
+                lastAssistantBubble = createLogLine(currentAssistantText, 'stdout');
+              }
+              responseArea.scrollTo({ top: responseArea.scrollHeight, behavior: 'smooth' });
+              await new Promise(r => setTimeout(r, DELAY_MS));
             }
           }
         }
@@ -917,19 +988,25 @@ listen('log-update', async (event) => {
         const tUse = currentToolUses.find(t => t.id === toolUseId);
         if (tUse) tUse.output = outputText;
 
-        if (outputText && toolCardMap.has(toolUseId)) {
+        if (toolCardMap.has(toolUseId)) {
           const card = toolCardMap.get(toolUseId);
-          // Adiciona seção de output ao card existente
-          const outSection = document.createElement('div');
-          outSection.className = 'tool-output';
-          const outPre = document.createElement('pre');
-          outPre.className = 'tool-output-pre';
-          outPre.textContent = outputText.length > 2000
-            ? outputText.slice(0, 2000) + '\n… (truncado)'
-            : outputText;
-          outSection.appendChild(outPre);
-          card.appendChild(outSection);
+          card.classList.add('completed');
+
+          if (outputText) {
+            // Adiciona seção de output ao card existente
+            const outSection = document.createElement('div');
+            outSection.className = 'tool-output';
+            const outPre = document.createElement('pre');
+            outPre.className = 'tool-output-pre';
+            outPre.textContent = outputText.length > 2000
+              ? outputText.slice(0, 2000) + '\n… (truncado)'
+              : outputText;
+            outSection.appendChild(outPre);
+            card.appendChild(outSection);
+          }
           responseArea.scrollTo({ top: responseArea.scrollHeight, behavior: 'smooth' });
+          // Pausa: mostra o resultado da ferramenta por um momento
+          await new Promise(r => setTimeout(r, 100));
         }
         toolCardMap.delete(toolUseId);
         continue;
@@ -947,6 +1024,11 @@ listen('log-update', async (event) => {
           if (currentThinkingBubble) {
             currentThinkingBubble.remove();
             currentThinkingBubble = null;
+          }
+          // Remove o último card de ferramenta ao finalizar o ciclo
+          if (lastToolCard) {
+            lastToolCard.remove();
+            lastToolCard = null;
           }
           ensureChatMode();
           const toolBlock = renderToolUseBlock(silentTools);
@@ -1021,8 +1103,11 @@ listen('log-update', async (event) => {
           }
         }
 
-        // Injeta botões de resposta rápida no modo Ask/Plan (não no Auto)
-        if (lastAssistantBubble && resultText && currentMode !== 'auto') {
+        // Injeta botões de resposta rápida apenas no modo Ask (não no Auto nem no Plan).
+        // No modo Plan o agente só descreve ações, então quick replies não fazem sentido:
+        // clicar em "ok" re-enviaria com o prefixo de planejamento, fazendo o agente
+        // descrever mais um plano ao invés de executar.
+        if (lastAssistantBubble && resultText && currentMode === 'ask') {
           injectQuickReplies(lastAssistantBubble, resultText);
         }
 
@@ -1036,6 +1121,7 @@ listen('log-update', async (event) => {
 
   // ── stderr e system (logs do processo) ──
   if (currentThinkingBubble && (data.source === 'system' || data.source === 'stderr')) {
+    window._lastActivityTime = Date.now(); // Registra atividade
     const subtextEl = currentThinkingBubble.querySelector('.thinking-subtext');
     const titleEl = currentThinkingBubble.querySelector('.thinking-text');
     if (subtextEl) {
@@ -1065,7 +1151,13 @@ listen('log-update', async (event) => {
 
         const lines = buf.split('\n').filter(l => l.trim().length > 0);
         if (lines.length > 0) {
-          subtextEl.textContent = `└ ${lines[lines.length - 1].trim()}`;
+          const lastLine = lines[lines.length - 1].trim();
+          // Mensagens internas do CLI ([context], etc.) — ignora, mantém subtítulo anterior
+          if (/\[context\]/i.test(lastLine) || /not in context window/i.test(lastLine)) {
+            // não atualiza o subtítulo
+          } else {
+            subtextEl.textContent = `└ ${lastLine}`;
+          }
           subtextEl.classList.toggle('active', isFatal);
         }
       } else {
@@ -1185,7 +1277,7 @@ function createInlineToolBlock(toolName, toolInput) {
 
   if (toolName === 'Bash') {
     const cmd = toolInput.command || '';
-    return buildCodeCard(ICONS.Bash, 'Executando comando', cmd, 'bash');
+    return buildCodeCard(ICONS.Bash, 'Comando Bash', cmd, 'bash');
   }
 
   return null; // Read, Glob, Grep, etc. → apenas no sumário colapsável
@@ -1197,7 +1289,11 @@ function buildDiffCard(filePath, oldStr, newStr) {
 
   const header = document.createElement('div');
   header.className = 'inline-tool-header';
-  header.innerHTML = `<span class="inline-tool-icon">✏️</span><span class="inline-tool-title">${escapeHtml(filePath)}</span>`;
+  header.innerHTML = `
+    <span class="inline-tool-icon">✏️</span>
+    <span class="inline-tool-title">${escapeHtml(filePath)}</span>
+    <div class="inline-tool-spinner"></div>
+  `;
   card.appendChild(header);
 
   const pre = document.createElement('pre');
@@ -1238,7 +1334,11 @@ function buildCodeCard(icon, title, code, lang) {
 
   const header = document.createElement('div');
   header.className = 'inline-tool-header';
-  header.innerHTML = `<span class="inline-tool-icon">${icon}</span><span class="inline-tool-title">${escapeHtml(title)}</span>`;
+  header.innerHTML = `
+    <span class="inline-tool-icon">${icon}</span>
+    <span class="inline-tool-title">${escapeHtml(title)}</span>
+    <div class="inline-tool-spinner"></div>
+  `;
   card.appendChild(header);
 
   if (code.trim()) {
@@ -1518,6 +1618,7 @@ async function sendMessage(directText) {
     subEl.textContent = 'Preparando requisição...';
   }
   window._thinkingStartTime = Date.now();
+  window._lastActivityTime = Date.now(); // Rastreia última atividade de stdout/stderr
   window._liveTokens = { in: 0, out: 0 };
 
   // Timer em tempo real atualiza a cada segundo
@@ -1533,9 +1634,34 @@ async function sendMessage(directText) {
     if (timerEl) timerEl.textContent = formatted;
 
     const tokEl = currentThinkingBubble.querySelector('.live-tokens');
+    const costEl = currentThinkingBubble.querySelector('.live-cost');
     if (tokEl && (window._liveTokens.in || window._liveTokens.out)) {
       tokEl.style.display = '';
       tokEl.textContent = `↑${window._liveTokens.in.toLocaleString()} ↓${window._liveTokens.out.toLocaleString()} tk`;
+      
+      const model = getLivingModel();
+      const costRaw = calculateCost(model, window._liveTokens.in, window._liveTokens.out);
+      if (costEl && costRaw > 0) {
+        costEl.style.display = 'inline-block';
+        costEl.innerHTML = `<span style="color: #999; margin-right: 2px;">$</span>${costRaw.toFixed(4)}`;
+      }
+    }
+
+    // Indicador de inatividade: se nenhum dado chegou nos últimos 5s,
+    // atualiza o subtítulo para deixar claro que está aguardando a API.
+    // Nota: não usamos !lastAssistantBubble pois ele fica setado entre trocas da mesma sessão.
+    const silenceSec = Math.floor((Date.now() - (window._lastActivityTime || Date.now())) / 1000);
+    if (silenceSec >= 5) {
+      const subEl = currentThinkingBubble.querySelector('.thinking-subtext');
+      const titleEl = currentThinkingBubble.querySelector('.thinking-text');
+      if (titleEl && titleEl.textContent !== 'Erro no processo') {
+        titleEl.textContent = 'Processando';
+      }
+      if (subEl) {
+        subEl.style.display = 'inline-block';
+        const dots = '.'.repeat((Math.floor(silenceSec / 2) % 3) + 1);
+        subEl.textContent = `Aguardando resposta${dots} ${silenceSec}s`;
+      }
     }
   }, 1000);
 

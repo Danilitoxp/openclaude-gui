@@ -778,6 +778,11 @@ pub async fn send_command(
             cmd.args(&pre_args);
             cmd.args(&base_args);
             cmd.arg("--print");
+            // stream-json: emite 1 evento JSON por linha (tool_use, text, result...)
+            // --verbose é obrigatório para esse formato funcionar com --print
+            cmd.arg("--output-format");
+            cmd.arg("stream-json");
+            cmd.arg("--verbose");
             if mode == "auto" || cfg.skip_permissions {
                 cmd.arg("--dangerously-skip-permissions");
             }
@@ -829,9 +834,18 @@ pub async fn send_command(
                 }
             }
 
+            eprintln!("[RUST-SPAWN] Tentando exe={:?} pre_args={:?} base_args={:?} mode={} cwd={}",
+                exe, pre_args, base_args, mode, working_dir);
             match cmd.spawn() {
-                Ok(proc) => { spawned = Some(proc); break; }
-                Err(_) => continue,
+                Ok(proc) => {
+                    eprintln!("[RUST-SPAWN] OK - processo iniciado com exe={:?}", exe);
+                    spawned = Some(proc);
+                    break;
+                }
+                Err(e) => {
+                    eprintln!("[RUST-SPAWN] FALHOU exe={:?} err={}", exe, e);
+                    continue;
+                }
             }
         }
 
@@ -849,17 +863,22 @@ pub async fn send_command(
 
         let full_reply = Arc::new(tokio::sync::Mutex::new(String::new()));
 
+        // Canais para sinalizar que cada stream terminou de ser lido
+        let (stdout_done_tx, stdout_done_rx) = tokio::sync::oneshot::channel::<()>();
+        let (stderr_done_tx, stderr_done_rx) = tokio::sync::oneshot::channel::<()>();
+
         // Stream stdout
         if let Some(mut stdout) = proc.stdout.take() {
             let handle = app_handle.clone();
             let reply_clone = full_reply.clone();
             tokio::spawn(async move {
-                let mut buf = [0u8; 4096];
+                let mut buf = [0u8; 8192];
                 loop {
                     match stdout.read(&mut buf).await {
                         Ok(0) | Err(_) => break,
                         Ok(n) => {
                             let text = String::from_utf8_lossy(&buf[..n]).to_string();
+                            eprintln!("[RUST-STDOUT] {} bytes | preview: {:?}", n, text.chars().take(180).collect::<String>());
                             reply_clone.lock().await.push_str(&text);
                             let _ = tauri::Emitter::emit(&handle, "log-update", serde_json::json!({
                                 "source": "stdout", "message": text
@@ -867,26 +886,61 @@ pub async fn send_command(
                         }
                     }
                 }
+                // Sinaliza que terminou de ler todo o stdout
+                let _ = stdout_done_tx.send(());
             });
+        } else {
+            let _ = stdout_done_tx.send(());
         }
 
         // Stream stderr
         if let Some(mut stderr) = proc.stderr.take() {
             let handle = app_handle.clone();
             tokio::spawn(async move {
-                let mut buf = [0u8; 4096];
+                let mut buf = [0u8; 8192];
+                // Filtra warnings benignos repetidos do CLI (ex: "[context] Warning: model ... not in context window table")
+                // O CLI loga esse warning a cada operação interna, causando flood na UI.
+                let mut last_emitted = String::new();
                 loop {
                     match stderr.read(&mut buf).await {
                         Ok(0) | Err(_) => break,
                         Ok(n) => {
                             let text = String::from_utf8_lossy(&buf[..n]).to_string();
+                            eprintln!("[RUST-STDERR] {} bytes | preview: {:?}", n, text.chars().take(180).collect::<String>());
+
+                            // Remove linhas que são puramente warnings de [context] duplicados
+                            let filtered: String = text
+                                .lines()
+                                .filter(|l| {
+                                    let t = l.trim();
+                                    // Descarta linhas vazias (mantem comportamento) E warnings de [context]
+                                    !t.starts_with("[context] Warning:")
+                                })
+                                .collect::<Vec<_>>()
+                                .join("\n");
+
+                            // Se depois do filtro sobrou só whitespace, não emite
+                            if filtered.trim().is_empty() {
+                                continue;
+                            }
+
+                            // Dedup: não emite se for exatamente igual ao último chunk emitido
+                            if filtered == last_emitted {
+                                continue;
+                            }
+                            last_emitted = filtered.clone();
+
                             let _ = tauri::Emitter::emit(&handle, "log-update", serde_json::json!({
-                                "source": "stderr", "message": text
+                                "source": "stderr", "message": filtered
                             }));
                         }
                     }
                 }
+                // Sinaliza que terminou de ler todo o stderr
+                let _ = stderr_done_tx.send(());
             });
+        } else {
+            let _ = stderr_done_tx.send(());
         }
 
         // Loop de espera do processo (com suporte a abortar)
@@ -901,6 +955,12 @@ pub async fn send_command(
                 }
             }
         }
+
+        // IMPORTANTE: aguarda os readers de stdout e stderr terminarem completamente
+        // antes de emitir 'done', evitando que o frontend receba 'done' antes de
+        // todo o conteúdo ter sido entregue (race condition que causava respostas truncadas).
+        let _ = stdout_done_rx.await;
+        let _ = stderr_done_rx.await;
 
         // Adiciona a resposta da IA ao histórico e emite evento 'done'
         // Se o output é stream-json, extrai apenas o texto limpo para o histórico

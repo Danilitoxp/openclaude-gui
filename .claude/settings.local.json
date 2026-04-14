@@ -6,7 +6,9 @@
       "Bash(cargo check:*)",
       "Bash(node --check src/App.js)",
       "Bash(node --check src/main.js)",
-      "Bash(ls *.env .env)"
+      "Bash(ls *.env .env)",
+      "Bash(openclaude --help)",
+      "Bash(where rg:*)"
     ]
   }
 }

@@ -3,7 +3,8 @@
     "allow": [
       "Bash(node *)",
       "Bash(npm run *)",
-      "Bash(npx *)"
+      "Bash(npx *)",
+      "Read(C:\\Users\\Danilo\\.qwen\\tmp\\clipboard/**)"
     ]
   },
   "$version": 3
