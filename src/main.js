@@ -571,6 +571,8 @@ const selectSession = async (id) => {
     // No interval to clear anymore
     const messages = await invoke('load_session', { id });
     currentSessionId = id;
+    // Ao carregar uma sessão salva, não continuamos a sessão CLI anterior
+    window._continueSession = false;
 
     responseArea.innerHTML = '';
     const hero = document.querySelector('.hero-section');
@@ -1707,8 +1709,9 @@ async function sendMessage(directText) {
       ...(currentProjectPath ? { 'OPENCLAUDE_CWD': currentProjectPath } : {}),
       ...(window._continueSession ? { 'OPENCLAUDE_CONTINUE': '1' } : {}),
     };
-    // Consome a flag de continue (só vale para a próxima mensagem)
-    window._continueSession = false;
+    // Após a primeira mensagem da sessão, ativa --continue automaticamente
+    // para que as mensagens seguintes mantenham o contexto da conversa.
+    window._continueSession = true;
 
     // Puxa as configurações do provedor salvas no Modal da interface
     const savedProvider = localStorage.getItem('openclaude_provider_full');
@@ -2029,6 +2032,7 @@ const startNewSession = async () => {
     lastAssistantBubble = null;
     currentThinkingBubble = null;
     currentSessionId = null;
+    window._continueSession = false;
 
     await loadSessionsList();
     console.log('[SYSTEM] Memória limpa e nova sessão iniciada');
